@@ -49,7 +49,10 @@ def transform_input_vglc(json_path, opt):
                 scale_channels = [channel_scaledown[scale] for channel_scaledown in channel_scaledowns]
                 scale_channels = np.array(scale_channels)
                 scale_channels = np.moveaxis(scale_channels, [0, 1, 2], [2, 0, 1])
-                test_similarity = scale_channels.mean(axis=(0, 1)) - image.mean(axis=(0, 1))
+                # Test that the balance between channels (% ground, % enemies etc) is equal to that of the source
+                channel_balance_similarity_check = scale_channels.mean(axis=(0, 1)) - image.mean(axis=(0, 1))
+                # Test that every pixel sums to 1
+                pixel_balance_text = scale_channels.sum(axis=2)
                 res.append(scale_channels)
             levels.append(res)
 
