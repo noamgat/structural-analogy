@@ -84,7 +84,9 @@ def init_models_res(opt):
 
 
 def transform_input(img_path, opt):
-
+    if img_path.endswith('.json'):
+        from vglc_utils import transform_input_vglc
+        return transform_input_vglc(img_path, opt)
     res = []
     image = Image.open(img_path).convert('RGB')
     for ii in range(0, opt.stop_scale + 1, 1):
@@ -369,7 +371,7 @@ if __name__ == '__main__':
 
             #############################
             ####      Train G      ####
-            #############################
+            ############################Load weights of last layerLoad weights of last layer#
 
             G_a.zero_grad()
             G_b.zero_grad()
