@@ -1,11 +1,8 @@
 import collections
 import math
 import cv2
-import PIL
-import torchvision
 import numpy as np
-from skimage.transform import resize
-from vglc_reader import VGLCLevelRepresentationType, VGLCGameData
+from vglc.vglc_reader import VGLCLevelRepresentationType, VGLCGameData, VGLCCommonTileType
 from typing import List
 
 def create_downsample_path(in_height, in_width, kernel_size, num_halfings):
@@ -15,22 +12,47 @@ def create_downsample_path(in_height, in_width, kernel_size, num_halfings):
     strides = []
     paddings = []
 
+# TODO: Does this work for upsampling as well?
+def resize_pouplation_image(src_population_image, target_size):
+    # Assume src_population image shape is channels,h,w
+    assert len(src_population_image.shape) == 3
+    height, width = target_size
+    resized_channels = []
+    for channel_idx in range(src_population_image.shape[0]):
+        resized_channels.append(cv2.resize(src_population_image[channel_idx, :, :], tuple(width, height), interpolation=cv2.INTER_AREA))
+    resized_image = np.stack(resized_channels)
+    return resized_image
 
-def transform_input_vglc(json_path, opt):
+def transform_input_vglc(json_path, levels_dir, opt):
     #  TODO: Extract representation type from opt
-    representation_type = VGLCLevelRepresentationType.ONE_HOT
+    representation_type = VGLCLevelRepresentationType.ONE_HOT_COMMON
     levels = []
-    game = VGLCGameData(json_path)
+    game = VGLCGameData(json_path, levels_dir)
+    prepadded_levels = game.get_levels(representation_type)
+    prepadded_shapes = [lev.shape for lev in prepadded_levels]
+    padded_rows = max(s[0] for s in prepadded_shapes)
+    padded_cols = max(s[1] for s in prepadded_shapes)
+    num_channels = max(s[2] for s in prepadded_shapes)  # Should all be same
+    padded_levels = []
+    for prepadded_level in prepadded_levels:
+        padded_level = np.zeros((padded_rows, padded_cols, num_channels), dtype=prepadded_level.dtype)
+        padded_level[:, :, 0] = 1  # Assume empty block is [1,0,0,...,0]
+        # In order to pad a level, add empty pixels from topright corner (align bottom left of padded and unpadded)
+        padded_level[-prepadded_level.shape[0]:, :prepadded_level.shape[1], :] = prepadded_level
+        padded_levels.append(padded_level)
+
     for levelidx in range(len(game)):
 
-        image = game.get_level(levelidx, representation_type).astype(float)
+        #image = game.get_level(levelidx, representation_type).astype(float)
+        image = padded_levels[levelidx].astype(float)
 
         def downscale_image(source_image_2d):
             h, w = source_image_2d.shape
             res = []
             for ii in range(0, opt.stop_scale + 1, 1):
                 scale = math.pow(opt.scale_factor, opt.stop_scale - ii)
-                # Tested PIL, numpy and CV2 resizing. CV2 was only one to preserve
+                # Tested PIL, numpy and CV2 resizing. CV2 was only one to preserve channel and pixel stability. See
+                # tests ~15 lines below
                 #cv2 wants w,h format even if matrix is h,w
                 target_size = np.uint32(np.ceil((w * scale, h * scale)))
                 sample = cv2.resize(source_image_2d, tuple(target_size), interpolation=cv2.INTER_AREA)
@@ -41,7 +63,6 @@ def transform_input_vglc(json_path, opt):
         if len(img_size) == 2:
             levels.append(downscale_image(image))
         elif len(img_size) == 3:
-            num_channels = img_size[2]
             channel_images = [image[:, :, i] for i in range(num_channels)]
             channel_scaledowns = [downscale_image(channel_image) for channel_image in channel_images]
             num_scales = len(channel_scaledowns[0])
@@ -57,23 +78,23 @@ def transform_input_vglc(json_path, opt):
                 res.append(scale_channels)
             levels.append(res)
 
-    save_visualizations_on_load = True
+    save_visualizations_on_load = False
     if save_visualizations_on_load:
         for levelidx, level in enumerate(levels):
             fn = f'VisualizeLevels/TestLevel{levelidx}.png'
             arrs = [visualize_level(game, arr) for arr in level]
             save_numpy_rgb_uint8_images(arrs, fn)
+        raise Exception("Visualized")
     return levels
 
 
-def get_tile_color(tile_properties):
-    if 'empty' in tile_properties:
-        return 255, 255, 255
-    if 'hazard' in tile_properties:
-        return 255, 0, 0
-    if 'collectable' in tile_properties:
-        return 255, 255, 0
-    return 150, 75, 0
+def get_tile_color(common_tile_type: VGLCCommonTileType):
+    return {
+        VGLCCommonTileType.EMPTY: (255, 255, 255),
+        VGLCCommonTileType.HAZARD: (255, 0, 0),
+        VGLCCommonTileType.COLLECTIBLE: (255, 255, 0),
+        VGLCCommonTileType.GROUND: (150, 75, 0),
+    }[common_tile_type]
 
 
 def visualize_level(vglc_game_data: VGLCGameData, population_vector: np.ndarray):
@@ -81,7 +102,7 @@ def visualize_level(vglc_game_data: VGLCGameData, population_vector: np.ndarray)
     pixels_per_population = (per_pixel_output_dimension ** 2)
     stride = per_pixel_output_dimension + 1
     result = np.zeros((population_vector.shape[0]*stride, population_vector.shape[1]*stride, 3), dtype=np.uint8)
-    indexed_colors = [get_tile_color(vglc_game_data.tile_info[k]) for k in vglc_game_data.sorted_tile_types]
+    indexed_colors = [get_tile_color(common_tile_type) for common_tile_type in VGLCCommonTileType]
     for y in range(population_vector.shape[0]):
         for x in range(population_vector.shape[1]):
             population = population_vector[y, x]
@@ -114,3 +135,11 @@ def save_numpy_rgb_uint8_images(arr: List[np.ndarray], filename: str):
         y_offset += im.size[1]
 
     new_im.save(filename)
+
+
+def postprocess_opt(opt):
+    game_a = VGLCGameData(opt.input_a)
+    game_b = VGLCGameData(opt.input_b)
+    opt.nc_im = len(game_a.sorted_tile_types)
+    opt.nc_im_a = opt.nc_im
+    opt.nc_im_b = len(game_b.sorted_tile_types)
